@@ -1,22 +1,16 @@
-// HTTP & HTTPS modules
-var http = require('http');
-var https = require('https');
-var crypto = require('crypto');
+var express = require('express')
+var fs = require('fs')
+var https = require('https')
+var app = express()
 
-// URL & Request modules
-var url = require('url');
-var request = require('request');
+app.get('/', function (req, res) {
+  res.send('hello world')
+})
 
-// Filesystem module
-const fs = require('fs');
-
-// SSL Cert & Key
-var privateKey = fs.readFileSync('certs/server.key').toString();
-var certificate = fs.readFileSync('certs/server.cert').toString();
-
-var options = {key: privateKey, cert: certificate};
-
-https.createServer( options, function(req,res)
-{
-    app.handle( req, res );
-} ).listen( 443 );
+https.createServer({
+  key: fs.readFileSync('certs/server.key'),
+  cert: fs.readFileSync('certs/server.cert')
+}, app)
+.listen(3000, function () {
+  console.log('Example app listening on port 3000! Go to https://localhost:3000/')
+})
