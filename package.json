@@ -1,0 +1,22 @@
+{
+  "name": "cs3031-proxy-server",
+  "version": "1.0.0",
+  "description": "Web proxy server for CS3031 project.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dooleyb1/cs3031-proxy-server.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/dooleyb1/cs3031-proxy-server/issues"
+  },
+  "homepage": "https://github.com/dooleyb1/cs3031-proxy-server#readme",
+  "dependencies": {
+    "request": "^2.88.0"
+  }
+}
