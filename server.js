@@ -1,21 +1,37 @@
-var express = require('express')
 var fs = require('fs')
 var https = require('https')
 var http = require('http')
-var app = express()
+var url = require('url');
+var request = require('request')
 
-app.get('/', function (req, res) {
-  res.send('hello world')
-})
+function onRequest(req, res) {
 
-http.createServer(app).listen(3080, function () {
+    // Parse out / data
+    var queryData = url.parse(req.url, true).query;
+
+    // If there exists ?url=
+    if (queryData.url) {
+
+      console.log(queryData.url);
+
+      request(queryData.url, function(error, response, body){
+        console.log('Request:', queryData.url);
+        console.log('StatusCode:', response && response.statusCode);
+      }).pipe(res)
+    }
+    else {
+        res.end("No url found");
+    }
+}
+
+http.createServer(onRequest).listen(3080, function () {
   console.log('Example app listening on port 3080! Go to http://localhost:3080/')
 })
 
 https.createServer({
   key: fs.readFileSync('certs/server.key'),
   cert: fs.readFileSync('certs/server.cert')
-}, app)
+}, onRequest)
 .listen(3443, function () {
   console.log('Example app listening on port 3443! Go to https://localhost:3443/')
 })
