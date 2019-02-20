@@ -18,6 +18,7 @@
   "homepage": "https://github.com/dooleyb1/cs3031-proxy-server#readme",
   "dependencies": {
     "express": "^4.16.4",
+    "node-cache": "^4.2.0",
     "request": "^2.88.0"
   }
 }
