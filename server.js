@@ -3,10 +3,47 @@ var https = require('https');
 var http = require('http');
 var url = require('url');
 var request = require('request');
-const NodeCache = require( "node-cache" );
+var NodeCache = require( "node-cache" );
+var SimpleHashTable = require('simple-hashtable');
+var stdin = process.openStdin();
 
 // Create cache, never delete files unless updated by request
 const myCache = new NodeCache({ stdTTL: 3600, checkperiod: 3600 });
+const blockedURLS = new SimpleHashTable();
+
+blockedURLS.put('https://www.tcd.ie', 'blocked');
+
+// Console input listener, block URLs here
+stdin.addListener("data", function(data) {
+
+    // Extract command (block, unblock, printBlocked, printCache)
+    var input = data.toString();
+    var command = input.substring(0, input.indexOf(' '));
+
+    switch(command){
+      case "block":
+        var urlToBlock = data.toString().substring(6);
+        blockedURLS.put(urlToBlock);
+        console.log("Successfully blocked URL: " + urlToBlock);
+        break;
+
+      case "unblock":
+        var urlToUnBlock = data.toString().substring(8);
+
+        if(blockedURLS.containsKey(urlToUnBlock)){
+          blockedURLS.remove(urlToUnBlock);
+          console.log("Successfully unblocked URL: " + urlToUnBlock)
+        } else {
+          console.log("URL " + urlToUnBlock + " not found in blocked URLs");
+        }
+
+        break;
+
+      default:
+        console.log("Unknown command - " + command);
+        break;
+    }
+});
 
 function handleHttpRequest(url, client_response){
 
@@ -47,6 +84,14 @@ function handleHttpRequest(url, client_response){
 }
 
 function handleHttpsRequest(url, client_response){
+
+  // Check if URL is blocked
+  if(blockedURLS.containsKey(url)){
+    console.log("URL " + url + " is blocked.");
+    client_response.write("URL " + url + " is blocked.");
+    client_response.end();
+    return;
+  }
 
   https.get(url, (res) => {
 
