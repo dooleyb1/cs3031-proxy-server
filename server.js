@@ -6,7 +6,7 @@ var request = require('request');
 const NodeCache = require( "node-cache" );
 
 // Create cache, never delete files unless updated by request
-const myCache = new NodeCache({ stdTTL: 100, checkperiod: 120 });
+const myCache = new NodeCache({ stdTTL: 3600, checkperiod: 3600 });
 
 function handleHttpRequest(url, client_response){
 
@@ -52,7 +52,7 @@ function handleHttpsRequest(url, client_response){
 
     // Extract status code and expires from response
     const { statusCode } = res;
-    const expires = res.headers['expires'];
+    const responseExpiry = res.headers['expires'];
 
     let error;
 
@@ -73,15 +73,29 @@ function handleHttpsRequest(url, client_response){
     var cacheHit = false;
 
     // Check cache for web page and verify expires
-    myCache.get(url, (err, value) => {
+    myCache.get(url, (err, cachedResponse) => {
       if( !err ){
-        if(value == undefined){
+        if(cachedResponse == undefined){
           console.log("URL " + url + " not found in cache. Continuing with request...");
         }else{
           console.log("URL found in cache, returning cached page to client...");
-          client_response.write(value);
-          client_response.end();
-          cacheHit = true;
+
+          console.log("Expiry of object in cache: " + cachedResponse.expiry);
+          console.log("Response expiry: " + responseExpiry);
+
+          var cachedExpiryDate = Date.parse(cachedResponse.expiry);
+          var responseExpiryDate = Date.parse(responseExpiry);
+
+          // If cache expiry equal or better than response expiry cache hit
+          if (cachedExpiryDate >= responseExpiryDate){
+            console.log("Cache hit - newer expiry")
+            client_response.write(cachedResponse.body);
+            client_response.end();
+            cacheHit = true;
+          } else{
+            console.log("Cache miss - file had expired");
+          }
+
           return;
         }
       }
@@ -97,7 +111,13 @@ function handleHttpsRequest(url, client_response){
 
       res.on('end', () => {
 
-        myCache.set(url, rawData, (err, success) => {
+        // Create cache object with expiry
+        cacheObject = {
+          expiry: responseExpiry,
+          body: rawData
+        }
+
+        myCache.set(url, cacheObject, (err, success) => {
           if(!err && success){
             console.log("Successfully added " + url + " to cache");
           } else{
