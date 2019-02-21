@@ -2,7 +2,6 @@ var fs = require('fs');
 var https = require('https');
 var http = require('http');
 var URL = require('url');
-var request = require('request');
 var NodeCache = require( "node-cache" );
 var SimpleHashTable = require('simple-hashtable');
 var stdin = process.openStdin();
@@ -84,6 +83,7 @@ function handleResponse(options, res, client_response){
   // Check cache for web page and verify expires
   myCache.get(url, (err, cachedResponse) => {
     if( !err ){
+
       if(cachedResponse == undefined){
         console.log("URL " + url + " not found in cache. Continuing with request...");
       }else{
@@ -97,9 +97,11 @@ function handleResponse(options, res, client_response){
 
         // If cache expiry equal or better than response expiry cache hit
         if (cachedExpiryDate >= responseExpiryDate){
+          console.time('Cached Request Time');
           console.log("Cached page has not expired - returning...")
           client_response.write(cachedResponse.body);
           client_response.end();
+          console.timeEnd('Cached Request Time');
           cacheHit = true;
         } else{
           console.log("Cached response expired - fetching up to date response...");
@@ -113,10 +115,13 @@ function handleResponse(options, res, client_response){
     res.setEncoding('utf8');
 
     let rawData = '';
+    console.time('Non-Cached Request Time');
 
     res.on('data', (chunk) => { rawData += chunk; });
 
     res.on('end', () => {
+
+      console.timeEnd('Non-Cached Request Time');
 
       // Create cache object with expiry
       cacheObject = {
@@ -172,7 +177,7 @@ function onRequest(client_request, client_response) {
         client_response.end();
       }
     } else{
-      client_response.write('Invalid protocol, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+      client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
       client_response.end();
     }
 }
