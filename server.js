@@ -1,7 +1,7 @@
 var fs = require('fs');
 var https = require('https');
 var http = require('http');
-var url = require('url');
+var URL = require('url');
 var request = require('request');
 var NodeCache = require( "node-cache" );
 var SimpleHashTable = require('simple-hashtable');
@@ -11,7 +11,8 @@ var stdin = process.openStdin();
 const myCache = new NodeCache({ stdTTL: 3600, checkperiod: 3600 });
 const blockedURLS = new SimpleHashTable();
 
-blockedURLS.put('https://www.tcd.ie', 'blocked');
+// Block TCD to start with
+blockedURLS.put('www.tcd.ie', 'blocked');
 
 // Console input listener, block URLs here
 stdin.addListener("data", function(data) {
@@ -22,13 +23,13 @@ stdin.addListener("data", function(data) {
 
     switch(command){
       case "block":
-        var urlToBlock = data.toString().substring(6);
+        var urlToBlock = data.toString().substring(6).trim();
         blockedURLS.put(urlToBlock);
         console.log("Successfully blocked URL: " + urlToBlock);
         break;
 
       case "unblock":
-        var urlToUnBlock = data.toString().substring(8);
+        var urlToUnBlock = data.toString().substring(8).trim();
 
         if(blockedURLS.containsKey(urlToUnBlock)){
           blockedURLS.remove(urlToUnBlock);
@@ -45,45 +46,10 @@ stdin.addListener("data", function(data) {
     }
 });
 
-function handleHttpRequest(url, client_response){
+function handleResponse(options, res, client_response){
 
-  http.get(url, (res) => {
-    const { statusCode } = res;
-    const contentType = res.headers['content-type'];
-
-    let error;
-    console.log('Expires: ' + res.headers['expires']);
-
-    //If no 200 status received, error
-    if (statusCode !== 200) {
-      error = new Error('Request Failed.\n' +
-      `Status Code: ${statusCode}`);
-    }
-
-    if (error) {
-      console.error(error.message);
-
-      client_response.write(error.message);
-      client_response.end();
-      return;
-    }
-
-    res.setEncoding('utf8');
-
-    let rawData = '';
-
-    res.on('data', (chunk) => { rawData += chunk; });
-
-    res.on('end', () => {
-      client_response.write(rawData);
-      client_response.end();
-    });
-  }).on('error', (e) => {
-    console.error(`Got error: ${e.message}`);
-  });
-}
-
-function handleHttpsRequest(url, client_response){
+  // Extract URL from options
+  var url = options.hostname;
 
   // Check if URL is blocked
   if(blockedURLS.containsKey(url)){
@@ -93,107 +59,120 @@ function handleHttpsRequest(url, client_response){
     return;
   }
 
-  https.get(url, (res) => {
+  // Extract status code and expires from response
+  const { statusCode } = res;
+  const responseExpiry = res.headers['expires'];
 
-    // Extract status code and expires from response
-    const { statusCode } = res;
-    const responseExpiry = res.headers['expires'];
+  let error;
 
-    let error;
+  //If no 200 status received, error
+  if (statusCode !== 200) {
+    error = new Error('Request Failed.\n' +
+    `Status Code: ${statusCode}`);
+  }
 
-    //If no 200 status received, error
-    if (statusCode !== 200) {
-      error = new Error('Request Failed.\n' +
-      `Status Code: ${statusCode}`);
-    }
+  // Handle response error
+  if (error) {
+    console.error(error.message);
+    client_response.write(error.message);
+    client_response.end();
+    return;
+  }
 
-    if (error) {
-      console.error(error.message);
+  var cacheHit = false;
 
-      client_response.write(error.message);
-      client_response.end();
-      return;
-    }
+  // Check cache for web page and verify expires
+  myCache.get(url, (err, cachedResponse) => {
+    if( !err ){
+      if(cachedResponse == undefined){
+        console.log("URL " + url + " not found in cache. Continuing with request...");
+      }else{
+        console.log("URL found in cache, verifying cache page hasn't expired...");
 
-    var cacheHit = false;
+        console.log("Cache object expiry: " + cachedResponse.expiry);
+        console.log("Response expiry: " + responseExpiry);
 
-    // Check cache for web page and verify expires
-    myCache.get(url, (err, cachedResponse) => {
-      if( !err ){
-        if(cachedResponse == undefined){
-          console.log("URL " + url + " not found in cache. Continuing with request...");
-        }else{
-          console.log("URL found in cache, returning cached page to client...");
+        var cachedExpiryDate = Date.parse(cachedResponse.expiry);
+        var responseExpiryDate = Date.parse(responseExpiry);
 
-          console.log("Expiry of object in cache: " + cachedResponse.expiry);
-          console.log("Response expiry: " + responseExpiry);
-
-          var cachedExpiryDate = Date.parse(cachedResponse.expiry);
-          var responseExpiryDate = Date.parse(responseExpiry);
-
-          // If cache expiry equal or better than response expiry cache hit
-          if (cachedExpiryDate >= responseExpiryDate){
-            console.log("Cache hit - newer expiry")
-            client_response.write(cachedResponse.body);
-            client_response.end();
-            cacheHit = true;
-          } else{
-            console.log("Cache miss - file had expired");
-          }
-
-          return;
+        // If cache expiry equal or better than response expiry cache hit
+        if (cachedExpiryDate >= responseExpiryDate){
+          console.log("Cached page has not expired - returning...")
+          client_response.write(cachedResponse.body);
+          client_response.end();
+          cacheHit = true;
+        } else{
+          console.log("Cached response expired - fetching up to date response...");
         }
       }
-    });
-
-    // If url not found in cache, continue with request and cache new response
-    if(!cacheHit){
-      res.setEncoding('utf8');
-
-      let rawData = '';
-
-      res.on('data', (chunk) => { rawData += chunk; });
-
-      res.on('end', () => {
-
-        // Create cache object with expiry
-        cacheObject = {
-          expiry: responseExpiry,
-          body: rawData
-        }
-
-        myCache.set(url, cacheObject, (err, success) => {
-          if(!err && success){
-            console.log("Successfully added " + url + " to cache");
-          } else{
-            console.log("Failed to add " + url + " to cache");
-          }
-        })
-
-        client_response.write(rawData);
-        client_response.end();
-      });
-    } else{
-      console.log("Cache hit, returning...");
-      return;
     }
-
-  }).on('error', (e) => {
-    console.error(`Got error: ${e.message}`);
   });
+
+  // If url not found in cache, continue with request and cache new response
+  if(!cacheHit){
+    res.setEncoding('utf8');
+
+    let rawData = '';
+
+    res.on('data', (chunk) => { rawData += chunk; });
+
+    res.on('end', () => {
+
+      // Create cache object with expiry
+      cacheObject = {
+        expiry: responseExpiry,
+        body: rawData
+      }
+
+      myCache.set(url, cacheObject, (err, success) => {
+        if(!err && success){
+          console.log("Successfully added " + url + " to cache");
+        } else{
+          console.log("Failed to add " + url + " to cache");
+        }
+      })
+
+      client_response.write(rawData);
+      client_response.end();
+    });
+  }
 }
 
 function onRequest(client_request, client_response) {
 
-    var url = client_request.url.substring(1);
-    console.log('Received request for: ' + url);
+    var options = URL.parse(client_request.url.substring(1), true);
 
-    if(url.substring(0,7) == 'http://'){
-      handleHttpRequest(url, client_response);
-    } else if(url.substring(0,8) == 'https://'){
-      handleHttpsRequest(url, client_response);
-    } else {
-      client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+    // Only handle HTTP and HTTPS requests
+    if(options.protocol == 'http:' || options.protocol == 'https:'){
+
+      // Filter out favicon and assets requests
+      if(options.path != 'favicon.ico' && options.hostname != 'assets'){
+        console.log('\nReceived request for: ' + options.protocol + '//'+ options.hostname);
+
+        // Handle http and https request seperately
+        switch(options.protocol){
+          case 'http:':
+            http.get(options.href, (res) => handleResponse(options, res, client_response))
+            .on('error', (e) => {
+              console.error(`Got error: ${e.message}`);
+            });
+            break;
+          case 'https:':
+            https.get(options.href, (res) => handleResponse(options, res, client_response))
+            .on('error', (e) => {
+              console.error(`Got error: ${e.message}`);
+            });
+            break;
+          default:
+            client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+            client_response.end();
+            break;
+        }
+      } else{
+        client_response.end();
+      }
+    } else{
+      client_response.write('Invalid protocol, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
       client_response.end();
     }
 }
