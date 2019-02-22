@@ -10,6 +10,10 @@ var stdin = process.openStdin();
 const myCache = new NodeCache({ stdTTL: 3600, checkperiod: 3600 });
 const blockedURLS = new SimpleHashTable();
 
+// Constants for timing
+const NS_PER_SEC = 1e9
+const MS_PER_NS = 1e6
+
 // Block TCD to start with
 blockedURLS.put('www.tcd.ie', 'blocked');
 
@@ -21,12 +25,14 @@ stdin.addListener("data", function(data) {
     var command = input.substring(0, input.indexOf(' '));
 
     switch(command){
+      // Handle the dynamic blocking of URLs
       case "block":
         var urlToBlock = data.toString().substring(6).trim();
         blockedURLS.put(urlToBlock);
         console.log("Successfully blocked URL: " + urlToBlock);
         break;
 
+      // Handle the dynamic unblocking of URLs
       case "unblock":
         var urlToUnBlock = data.toString().substring(8).trim();
 
@@ -45,7 +51,7 @@ stdin.addListener("data", function(data) {
     }
 });
 
-function handleResponse(options, res, client_response){
+function handleResponse(options, res, client_response, eventTimes){
 
   // Extract URL from options
   var url = options.hostname;
@@ -117,11 +123,22 @@ function handleResponse(options, res, client_response){
     let rawData = '';
     console.time('Non-Cached Request Time');
 
+    // When first byte recieved
+    res.once('readable', () => {
+      eventTimes.firstByteAt = process.hrtime()
+      console.time('firstByteAt')
+    })
+
+    // When data is received
     res.on('data', (chunk) => { rawData += chunk; });
 
+    // When response is finished
     res.on('end', () => {
 
       console.timeEnd('Non-Cached Request Time');
+      eventTimes.endAt = process.hrtime()
+      var timings = getTimings(eventTimes);
+      console.log(timings);
 
       // Create cache object with expiry
       cacheObject = {
@@ -145,6 +162,17 @@ function handleResponse(options, res, client_response){
 
 function onRequest(client_request, client_response) {
 
+    // Record specific event times here
+    const eventTimes = {
+      // use process.hrtime() as it's not a subject of clock drift
+      startAt: process.hrtime(),
+      dnsLookupAt: undefined,
+      tcpConnectionAt: undefined,
+      tlsHandshakeAt: undefined,
+      firstByteAt: undefined,
+      endAt: undefined
+    }
+
     var options = URL.parse(client_request.url.substring(1), true);
 
     // Only handle HTTP and HTTPS requests
@@ -154,24 +182,73 @@ function onRequest(client_request, client_response) {
       if(options.path != 'favicon.ico' && options.hostname != 'assets'){
         console.log('\nReceived request for: ' + options.protocol + '//'+ options.hostname);
 
+        var proxy_req = null;
+
         // Handle http and https request seperately
         switch(options.protocol){
           case 'http:':
-            http.get(options.href, (res) => handleResponse(options, res, client_response))
-            .on('error', (e) => {
-              console.error(`Got error: ${e.message}`);
-            });
+            proxy_req = http.get(options.href, (res) => handleResponse(options, res, client_response, eventTimes));
             break;
           case 'https:':
-            https.get(options.href, (res) => handleResponse(options, res, client_response))
-            .on('error', (e) => {
-              console.error(`Got error: ${e.message}`);
+            proxy_req = https.get(options.href, (res) => handleResponse(options, res, client_response, eventTimes))
+            .on('socket', (socket) => {
+              // Record DNS Lookup
+              socket.on('lookup', () => {
+                eventTimes.dnsLookupAt = process.hrtime();
+              })
+              // Record TCP connection
+              socket.on('connect', () => {
+                eventTimes.tcpConnectionAt = process.hrtime();
+              })
+              // If HTTPS record TLS handshake timing
+              socket.on('secureConnect', () => {
+                eventTimes.tlsHandshakeAt = process.hrtime();
+              })
+              socket.on('end', () => {
+                eventTimes.requestEndAt = proxess.hrtime();
+              })
             });
             break;
           default:
             client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
             client_response.end();
             break;
+
+          // Handle proxy request events
+          // Once a socket is assigned to the proxy request
+          proxy_req.on('socket', (socket) => {
+            // Record DNS Lookup
+            socket.on('lookup', () => {
+              eventTimes.dnsLookupAt = process.hrtime();
+            })
+            // Record TCP connection
+            socket.on('connect', () => {
+              eventTimes.tcpConnectionAt = process.hrtime();
+            })
+            // If HTTPS record TLS handshake timing
+            socket.on('secureConnect', () => {
+              eventTimes.tlsHandshakeAt = process.hrtime();
+            })
+            socket.on('end', () => {
+              eventTimes.requestEndAt = proxess.hrtime();
+            })
+          });
+
+          // Handle request timeouts
+          proxy_req.on('timeout', () => {
+            console.log('Proxy request timed out...');
+            client_response.write('Proxy request timed out...');
+            client_response.end();
+            proxy_req.abort();
+          })
+
+          // Handle request errors
+          proxy_req.on('error', (e) => {
+            console.error(`Got error: ${e.message}`);
+            client_response.write(`Got error: ${e.message}`);
+            client_response.end();
+            proxy_req.abort();
+          });
         }
       } else{
         client_response.end();
@@ -180,6 +257,31 @@ function onRequest(client_request, client_response) {
       client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
       client_response.end();
     }
+}
+
+// Calculates all of the stored timing values
+function getTimings (eventTimes) {
+  return {
+    // There is no DNS lookup with IP address
+    dnsLookup: eventTimes.dnsLookupAt !== undefined ?
+      getHrTimeDurationInMs(eventTimes.startAt, eventTimes.dnsLookupAt) : undefined,
+    tcpConnection: getHrTimeDurationInMs(eventTimes.dnsLookupAt || eventTimes.startAt, eventTimes.tcpConnectionAt),
+    // There is no TLS handshake without https
+    tlsHandshake: eventTimes.tlsHandshakeAt !== undefined ?
+      (getHrTimeDurationInMs(eventTimes.tcpConnectionAt, eventTimes.tlsHandshakeAt)) : undefined,
+    firstByte: getHrTimeDurationInMs((eventTimes.tlsHandshakeAt || eventTimes.tcpConnectionAt), eventTimes.firstByteAt),
+    contentTransfer: getHrTimeDurationInMs(eventTimes.firstByteAt, eventTimes.endAt),
+    total: getHrTimeDurationInMs(eventTimes.startAt, eventTimes.endAt)
+  }
+}
+
+// Converts times to ms
+function getHrTimeDurationInMs (startTime, endTime) {
+  const secondDiff = endTime[0] - startTime[0]
+  const nanoSecondDiff = endTime[1] - startTime[1]
+  const diffInNanoSecond = secondDiff * NS_PER_SEC + nanoSecondDiff
+
+  return diffInNanoSecond / MS_PER_NS
 }
 
 http.createServer(onRequest).listen(3080, function () {
