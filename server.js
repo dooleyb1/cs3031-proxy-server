@@ -1,6 +1,7 @@
 var fs = require('fs');
 var https = require('https');
 var http = require('http');
+var WebSocket = require('ws');
 var URL = require('url');
 var NodeCache = require( "node-cache" );
 var SimpleHashTable = require('simple-hashtable');
@@ -51,6 +52,7 @@ stdin.addListener("data", function(data) {
     }
 });
 
+// Handle responses
 function handleResponse(options, res, client_response, eventTimes){
 
   // Extract URL from options
@@ -160,6 +162,7 @@ function handleResponse(options, res, client_response, eventTimes){
   }
 }
 
+// Handle requests
 function onRequest(client_request, client_response) {
 
     // Record specific event times here
@@ -259,6 +262,206 @@ function onRequest(client_request, client_response) {
     }
 }
 
+// Handle WebSocket requests
+function handleWebSocketRequest(url, ws){
+
+  // Record specific event times here
+  const eventTimes = {
+    // use process.hrtime() as it's not a subject of clock drift
+    startAt: process.hrtime(),
+    dnsLookupAt: undefined,
+    tcpConnectionAt: undefined,
+    tlsHandshakeAt: undefined,
+    firstByteAt: undefined,
+    endAt: undefined
+  }
+
+  var options = URL.parse(url, true);
+
+  // Only handle HTTP and HTTPS requests
+  if(options.protocol == 'http:' || options.protocol == 'https:'){
+
+    // Filter out favicon and assets requests
+    if(options.path != 'favicon.ico' && options.hostname != 'assets'){
+      console.log('\nReceived request for: ' + options.protocol + '//'+ options.hostname);
+
+      var proxy_req = null;
+
+      // Handle http and https request seperately
+      switch(options.protocol){
+        case 'http:':
+          proxy_req = http.get(options.href, (res) => handleWebSocketResponse(options, res, ws, eventTimes));
+          break;
+        case 'https:':
+          proxy_req = https.get(options.href, (res) => handleWebSocketResponse(options, res, ws, eventTimes))
+          .on('socket', (socket) => {
+            // Record DNS Lookup
+            socket.on('lookup', () => {
+              eventTimes.dnsLookupAt = process.hrtime();
+            })
+            // Record TCP connection
+            socket.on('connect', () => {
+              eventTimes.tcpConnectionAt = process.hrtime();
+            })
+            // If HTTPS record TLS handshake timing
+            socket.on('secureConnect', () => {
+              eventTimes.tlsHandshakeAt = process.hrtime();
+            })
+            socket.on('end', () => {
+              eventTimes.requestEndAt = proxess.hrtime();
+            })
+          });
+          break;
+        default:
+          ws.send('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+          break;
+
+        // Handle proxy request events
+        // Once a socket is assigned to the proxy request
+        proxy_req.on('socket', (socket) => {
+          // Record DNS Lookup
+          socket.on('lookup', () => {
+            eventTimes.dnsLookupAt = process.hrtime();
+          })
+          // Record TCP connection
+          socket.on('connect', () => {
+            eventTimes.tcpConnectionAt = process.hrtime();
+          })
+          // If HTTPS record TLS handshake timing
+          socket.on('secureConnect', () => {
+            eventTimes.tlsHandshakeAt = process.hrtime();
+          })
+          socket.on('end', () => {
+            eventTimes.requestEndAt = proxess.hrtime();
+          })
+        });
+
+        // Handle request timeouts
+        proxy_req.on('timeout', () => {
+          console.log('Proxy request timed out...');
+          ws.send('Proxy request timed out...');
+          proxy_req.abort();
+        })
+
+        // Handle request errors
+        proxy_req.on('error', (e) => {
+          console.error(`Got error: ${e.message}`);
+          ws.send(`Got error: ${e.message}`);
+          proxy_req.abort();
+        });
+      }
+    }
+  } else{
+    ws.send('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+  }
+}
+
+// Handle WebSocket responses
+function handleWebSocketResponse(options, res, ws, eventTimes){
+
+  // Extract URL from options
+  var url = options.hostname;
+
+  // Check if URL is blocked
+  if(blockedURLS.containsKey(url)){
+    console.log("URL " + url + " is blocked.");
+    ws.send("URL " + url + " is blocked.");
+    return;
+  }
+
+  // Extract status code and expires from response
+  const { statusCode } = res;
+  const responseExpiry = res.headers['expires'];
+
+  let error;
+
+  //If no 200 status received, error
+  if (statusCode !== 200) {
+    error = new Error('Request Failed.\n' +
+    `Status Code: ${statusCode}`);
+  }
+
+  // Handle response error
+  if (error) {
+    console.error(error.message);
+    ws.send(error.message);
+    return;
+  }
+
+  var cacheHit = false;
+
+  // Check cache for web page and verify expires
+  myCache.get(url, (err, cachedResponse) => {
+    if( !err ){
+
+      if(cachedResponse == undefined){
+        console.log("URL " + url + " not found in cache. Continuing with request...");
+      }else{
+        console.log("URL found in cache, verifying cache page hasn't expired...");
+
+        console.log("Cache object expiry: " + cachedResponse.expiry);
+        console.log("Response expiry: " + responseExpiry);
+
+        var cachedExpiryDate = Date.parse(cachedResponse.expiry);
+        var responseExpiryDate = Date.parse(responseExpiry);
+
+        // If cache expiry equal or better than response expiry cache hit
+        if (cachedExpiryDate >= responseExpiryDate){
+          console.time('Cached Request Time');
+          console.log("Cached page has not expired - returning...")
+          ws.send(cachedResponse.body);
+          console.timeEnd('Cached Request Time');
+          cacheHit = true;
+        } else{
+          console.log("Cached response expired - fetching up to date response...");
+        }
+      }
+    }
+  });
+
+  // If url not found in cache, continue with request and cache new response
+  if(!cacheHit){
+    res.setEncoding('utf8');
+
+    let rawData = '';
+    console.time('Non-Cached Request Time');
+
+    // When first byte recieved
+    res.once('readable', () => {
+      eventTimes.firstByteAt = process.hrtime()
+      console.time('firstByteAt')
+    })
+
+    // When data is received
+    res.on('data', (chunk) => { rawData += chunk; });
+
+    // When response is finished
+    res.on('end', () => {
+
+      console.timeEnd('Non-Cached Request Time');
+      eventTimes.endAt = process.hrtime()
+      var timings = getTimings(eventTimes);
+      console.log(timings);
+
+      // Create cache object with expiry
+      cacheObject = {
+        expiry: responseExpiry,
+        body: rawData
+      }
+
+      myCache.set(url, cacheObject, (err, success) => {
+        if(!err && success){
+          console.log("Successfully added " + url + " to cache");
+        } else{
+          console.log("Failed to add " + url + " to cache");
+        }
+      })
+
+      ws.send(rawData);
+    });
+  }
+}
+
 // Calculates all of the stored timing values
 function getTimings (eventTimes) {
   return {
@@ -284,14 +487,21 @@ function getHrTimeDurationInMs (startTime, endTime) {
   return diffInNanoSecond / MS_PER_NS
 }
 
-http.createServer(onRequest).listen(3080, function () {
-  console.log('Example app listening on port 3080! Go to http://localhost:3080/')
+// HTTP Server
+var server = http.createServer(onRequest).listen(4000, function () {
+  console.log('Example app listening on port 4000! Go to http://localhost:4000/')
 })
 
-https.createServer({
-  key: fs.readFileSync('certs/server.key'),
-  cert: fs.readFileSync('certs/server.cert')
-}, onRequest)
-.listen(3443, function () {
-  console.log('Example app listening on port 3443! Go to https://localhost:3443/')
-})
+// WebSocket server
+var wsServer = new WebSocket.Server({ server });
+
+// Handle connections to WebSocket server
+wsServer.on('connection', function connection(ws) {
+
+  console.log("Received websocket connection...");
+
+  ws.on('message', function incoming(message) {
+    console.log('Received WebSocket request for: %s', message);
+    handleWebSocketRequest(message, ws);
+  });
+});
