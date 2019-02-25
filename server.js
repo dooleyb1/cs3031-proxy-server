@@ -16,7 +16,7 @@ const NS_PER_SEC = 1e9
 const MS_PER_NS = 1e6
 
 // Block TCD to start with
-blockedURLS.put('www.tcd.ie', 'blocked');
+//blockedURLS.put('www.tcd.ie', 'blocked');
 
 // Console input listener, block URLs here
 stdin.addListener("data", function(data) {
@@ -88,31 +88,60 @@ function handleResponse(options, res, client_response, eventTimes){
 
   var cacheHit = false;
 
+  // Start cache lookup time
+  eventTimes.cacheLookupAt = process.hrtime()
+
   // Check cache for web page and verify expires
   myCache.get(url, (err, cachedResponse) => {
     if( !err ){
 
       if(cachedResponse == undefined){
         console.log("URL " + url + " not found in cache. Continuing with request...");
+        console.log("---------------------------------------------------------------------");
       }else{
         console.log("URL found in cache, verifying cache page hasn't expired...");
-
-        console.log("Cache object expiry: " + cachedResponse.expiry);
-        console.log("Response expiry: " + responseExpiry);
 
         var cachedExpiryDate = Date.parse(cachedResponse.expiry);
         var responseExpiryDate = Date.parse(responseExpiry);
 
         // If cache expiry equal or better than response expiry cache hit
         if (cachedExpiryDate >= responseExpiryDate){
-          console.time('Cached Request Time');
           console.log("Cached page has not expired - returning...")
           client_response.write(cachedResponse.body);
           client_response.end();
-          console.timeEnd('Cached Request Time');
+          eventTimes.cacheReturnAt = process.hrtime();
+
+          var responseSizeB = Buffer.byteLength(cachedResponse.body, 'utf8');
+          var responseSizeKB = responseSizeB/1024;
+
+          // Calculate and display total response size
+          console.log("---------------------------------------------------------------------");
+          console.log("Cached response size:  " + cachedResponse.body.length + " characters, " + responseSizeB + " bytes", responseSizeKB + " KB");
+          console.log("---------------------------------------------------------------------");
+
+          eventTimes.endAt = process.hrtime()
+          var cacheLookupTime = getHrTimeDurationInMs(eventTimes.cacheLookupAt, eventTimes.cacheReturnAt);
+
+          // Display timings
+          console.log("Process                          | Time Taken (ms)                       ");
+          console.log("---------------------------------------------------------------------");
+          console.log("DNS Lookup                       | 0");
+          console.log("TCP Connection                   | 0");
+          console.log("TLS Handshake                    | 0");
+          console.log("First Byte                       | 0");
+          console.log("Content Transfer                 | 0");
+          console.log("Cache Lookup                     | " + cacheLookupTime);
+          console.log("---------------------------------------------------------------------");
+          console.log("Total Request Time               | " + cacheLookupTime + " ms");
+
+          // Calculate bandwidth (KB/s)
+          var bandwidth = (responseSizeKB/(cacheLookupTime*0.001)).toFixed(6)
+          console.log("Total Request Bandwidth          | " + bandwidth + " KB/s");
+
           cacheHit = true;
         } else{
           console.log("Cached response expired - fetching up to date response...");
+          console.log("---------------------------------------------------------------------");
         }
       }
     }
@@ -123,7 +152,6 @@ function handleResponse(options, res, client_response, eventTimes){
     res.setEncoding('utf8');
 
     let rawData = '';
-    console.time('Non-Cached Request Time');
 
     // When first byte recieved
     res.once('readable', () => {
@@ -132,15 +160,41 @@ function handleResponse(options, res, client_response, eventTimes){
     })
 
     // When data is received
-    res.on('data', (chunk) => { rawData += chunk; });
+    res.on('data', (chunk) => {
+      rawData += chunk;
+      console.log("Received chunk of size " + chunk.length + " characters, " + Buffer.byteLength(chunk, 'utf8') + " bytes");
+    });
 
     // When response is finished
     res.on('end', () => {
 
-      console.timeEnd('Non-Cached Request Time');
       eventTimes.endAt = process.hrtime()
+
+      var responseSizeB = Buffer.byteLength(rawData, 'utf8');
+      var responseSizeKB = responseSizeB/1024;
+
+      // Calculate and display total response size
+      console.log("---------------------------------------------------------------------");
+      console.log("Total response size:  " + rawData.length + " characters, " + responseSizeB + " bytes", responseSizeKB + " KB");
+      console.log("---------------------------------------------------------------------");
+
       var timings = getTimings(eventTimes);
-      console.log(timings);
+
+      // Display timings
+      console.log("Process                          | Time Taken (ms)                       ");
+      console.log("---------------------------------------------------------------------");
+      console.log("DNS Lookup                       | " + timings.dnsLookup);
+      console.log("TCP Connection                   | " + timings.tcpConnection);
+      console.log("TLS Handshake                    | " + timings.tlsHandshake);
+      console.log("First Byte                       | " + timings.firstByte);
+      console.log("Content Transfer                 | " + timings.contentTransfer);
+      console.log("---------------------------------------------------------------------");
+      console.log("Total Request Time               | " + timings.total + " ms");
+
+      // Calculate bandwidth (KB/s)
+      var bandwidth = (responseSizeKB/(timings.total*0.001)).toFixed(6)
+      console.log("Total Request Bandwidth          | " + bandwidth + " KB/s");
+
 
       // Create cache object with expiry
       cacheObject = {
@@ -150,9 +204,9 @@ function handleResponse(options, res, client_response, eventTimes){
 
       myCache.set(url, cacheObject, (err, success) => {
         if(!err && success){
-          console.log("Successfully added " + url + " to cache");
+          console.log("\nSuccessfully added " + url + " to cache");
         } else{
-          console.log("Failed to add " + url + " to cache");
+          console.log("\nFailed to add " + url + " to cache");
         }
       })
 
@@ -173,7 +227,9 @@ function onRequest(client_request, client_response) {
       tcpConnectionAt: undefined,
       tlsHandshakeAt: undefined,
       firstByteAt: undefined,
-      endAt: undefined
+      endAt: undefined,
+      cacheLookupAt: undefined,
+      cacheReturnAt: undefined
     }
 
     var options = URL.parse(client_request.url.substring(1), true);
@@ -208,7 +264,7 @@ function onRequest(client_request, client_response) {
                 eventTimes.tlsHandshakeAt = process.hrtime();
               })
               socket.on('end', () => {
-                eventTimes.requestEndAt = proxess.hrtime();
+                eventTimes.requestEndAt = process.hrtime();
               })
             });
             break;
@@ -233,7 +289,7 @@ function onRequest(client_request, client_response) {
               eventTimes.tlsHandshakeAt = process.hrtime();
             })
             socket.on('end', () => {
-              eventTimes.requestEndAt = proxess.hrtime();
+              eventTimes.requestEndAt = process.hrtime();
             })
           });
 
@@ -273,7 +329,9 @@ function handleWebSocketRequest(url, ws){
     tcpConnectionAt: undefined,
     tlsHandshakeAt: undefined,
     firstByteAt: undefined,
-    endAt: undefined
+    endAt: undefined,
+    cacheLookupAt: undefined,
+    cacheReturnAt: undefined
   }
 
   var options = URL.parse(url, true);
@@ -308,7 +366,7 @@ function handleWebSocketRequest(url, ws){
               eventTimes.tlsHandshakeAt = process.hrtime();
             })
             socket.on('end', () => {
-              eventTimes.requestEndAt = proxess.hrtime();
+              eventTimes.requestEndAt = process.hrtime();
             })
           });
           break;
@@ -332,7 +390,7 @@ function handleWebSocketRequest(url, ws){
             eventTimes.tlsHandshakeAt = process.hrtime();
           })
           socket.on('end', () => {
-            eventTimes.requestEndAt = proxess.hrtime();
+            eventTimes.requestEndAt = process.hrtime();
           })
         });
 
@@ -466,14 +524,12 @@ function handleWebSocketResponse(options, res, ws, eventTimes){
 function getTimings (eventTimes) {
   return {
     // There is no DNS lookup with IP address
-    dnsLookup: eventTimes.dnsLookupAt !== undefined ?
-      getHrTimeDurationInMs(eventTimes.startAt, eventTimes.dnsLookupAt) : undefined,
+    dnsLookup: eventTimes.dnsLookupAt !== undefined ? getHrTimeDurationInMs(eventTimes.startAt, eventTimes.dnsLookupAt) : undefined,
     tcpConnection: getHrTimeDurationInMs(eventTimes.dnsLookupAt || eventTimes.startAt, eventTimes.tcpConnectionAt),
-    // There is no TLS handshake without https
-    tlsHandshake: eventTimes.tlsHandshakeAt !== undefined ?
-      (getHrTimeDurationInMs(eventTimes.tcpConnectionAt, eventTimes.tlsHandshakeAt)) : undefined,
+    tlsHandshake: eventTimes.tlsHandshakeAt !== undefined ? (getHrTimeDurationInMs(eventTimes.tcpConnectionAt, eventTimes.tlsHandshakeAt)) : undefined,
     firstByte: getHrTimeDurationInMs((eventTimes.tlsHandshakeAt || eventTimes.tcpConnectionAt), eventTimes.firstByteAt),
     contentTransfer: getHrTimeDurationInMs(eventTimes.firstByteAt, eventTimes.endAt),
+    cachedResponseTime: (eventTimes.cacheLookupAt != undefined && eventTimes.cacheReturnAt != undefined) ? getHrTimeDurationInMs(eventTimes.cacheLookupAt, eventTimes.cacheReturnAt) : undefined,
     total: getHrTimeDurationInMs(eventTimes.startAt, eventTimes.endAt)
   }
 }
