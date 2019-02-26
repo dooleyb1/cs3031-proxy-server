@@ -16,7 +16,7 @@ const NS_PER_SEC = 1e9
 const MS_PER_NS = 1e6
 
 // Block TCD to start with
-//blockedURLS.put('www.tcd.ie', 'blocked');
+blockedURLS.put('www.tcd.ie', 'blocked');
 
 // Console input listener, block URLs here
 stdin.addListener("data", function(data) {
@@ -76,6 +76,11 @@ function handleResponse(options, res, client_response, eventTimes){
   if (statusCode !== 200) {
     error = new Error('Request Failed.\n' +
     `Status Code: ${statusCode}`);
+  }
+
+  if(statusCode == 302 || statusCode == 301) {
+    error = new Error('Page has moved to URL:\n' +
+    `\n${res.headers['location']}`)
   }
 
   // Handle response error
@@ -269,7 +274,7 @@ function onRequest(client_request, client_response) {
             });
             break;
           default:
-            client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+            client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:4000/https://www.tcd.ie');
             client_response.end();
             break;
 
@@ -313,7 +318,7 @@ function onRequest(client_request, client_response) {
         client_response.end();
       }
     } else{
-      client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+      client_response.write('Invalid request, please enter a valid request such as:\n\nhttp://localhost:4000/https://www.tcd.ie');
       client_response.end();
     }
 }
@@ -371,7 +376,7 @@ function handleWebSocketRequest(url, ws){
           });
           break;
         default:
-          ws.send('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+          ws.send('Invalid request, please enter a valid request such as:\n\nhttp://localhost:4000/https://www.tcd.ie');
           break;
 
         // Handle proxy request events
@@ -410,7 +415,7 @@ function handleWebSocketRequest(url, ws){
       }
     }
   } else{
-    ws.send('Invalid request, please enter a valid request such as:\n\nhttp://localhost:3080/https://www.tcd.ie');
+    ws.send('Invalid request, please enter a valid request such as:\n\nhttp://localhost:4000/https://www.tcd.ie');
   }
 }
 
