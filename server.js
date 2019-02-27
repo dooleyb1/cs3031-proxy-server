@@ -78,11 +78,6 @@ function handleResponse(options, res, client_response, eventTimes){
     `Status Code: ${statusCode}`);
   }
 
-  if(statusCode == 302 || statusCode == 301) {
-    error = new Error('Page has moved to URL:\n' +
-    `\n${res.headers['location']}`)
-  }
-
   // Handle response error
   if (error) {
     console.error(error.message);
